@@ -1,0 +1,875 @@
+---
+title: "Cold Spell at 10-days Post-infection"
+output: html_document
+date: '2023-08-04'
+---
+
+#Library Set Up
+
+```{r Library Setup}
+#creating percentages and tidying data
+library(dplyr)
+#glm.nb model
+library(MASS)
+#elastic regression
+library(glmnet)
+#AUC binomial model check
+library(pROC)
+#feature importance 
+library(caret)
+#post-hoc contrasts for models 
+library(emmeans)
+#zero-inflated model
+library(pscl)
+#GGPlot for graphing
+library(ggplot2)
+```
+
+#Import and Clean Data 
+
+````{r Import Data Set}
+setwd("/Users/niamhmccartan/Documents/College/PhD/Papers/CS_Ten/Final_Documents")
+
+coldsnap<-read.csv("CS_Data.csv", 
+                 header = TRUE, 
+                 stringsAsFactors = FALSE)
+```
+
+```{r Remove early deaths, males and uninfected controls}
+CST <- subset(coldsnap, Include == "Yes")
+```
+
+```{r Make Treatment Column}
+CST$Treatment <- paste(CST$Amplitude, CST$Duration)
+```
+
+```{r Set Variables}
+CST$A_Temp<-as.numeric(CST$A_Temp)
+CST$Real_Avg<-as.numeric(CST$Real_Avg)
+CST$Bath<-as.factor(CST$Bath)
+CST$Timing<-as.factor(CST$Timing)
+CST$Amplitude<-as.factor(CST$Amplitude)
+CST$Duration<-as.factor(CST$Duration)
+CST$Infection<-as.numeric(CST$Infection)
+CST$Spores<-as.numeric(CST$Spores)
+CST$Exposed<-as.numeric(CST$Exposed)
+CST$Treatment <- as.factor(CST$Treatment)
+```
+
+```{r Specifying Order of Factors}
+CST$Amplitude <- factor(CST$Amplitude, levels = c("0", "-3", "-6"))
+CST$Duration <- factor(CST$Duration, levels = c("0", "3", "6"))
+CST$Treatment <- factor(CST$Treatment, levels = c("0 0", "-3 3", "-3 6", "-6 3", "-6 6"))
+```
+
+```{r Adding Proportion Infected and Standard Error of Burden Column}
+CST = CST %>%
+  group_by(Treatment, A_Temp, Timing) %>% 
+  #Make proportion infected columns 
+  add_count(Treatment) %>% 
+  mutate(
+    nn = sum(Infection != 0),
+    Prop = nn/n,
+  #creating binomial confidence intervals
+  se.I = sqrt(Prop * (1-Prop)/n),
+  lower.I = pmax(Prop - (se.I * 1.96), 0),
+  upper.I = pmin(Prop + (se.I * 1.96), 1)
+  ) %>% 
+  
+  #Make standard error columns
+  mutate(
+    mean = mean(Spores, na.rm = T),
+    sd.B = sd(Spores, na.rm = T),
+    se.B = sd.B/sqrt(n())) %>%
+  ungroup()
+```
+
+```{r Centre Average Temperature}
+# Centering the 'Real_Avg' variable
+CST$Real_Avg_Cent <- scale(CST$Real_Avg, center = TRUE, scale = FALSE)
+CST$Real_Avg_Cent <- as.numeric(CST$Real_Avg_Cent)
+```
+
+```{r Extra Subsets}
+#Subset for only core average temperatures
+CSTC <- subset(CST, A_Temp %in% c("14","17","20","23"))
+CSTC$A_Temp <- as.factor(CSTC$A_Temp)
+
+# Remove NAs from the data set not relevant as we are only looking at infected individuals
+CST.NA <- na.omit(CST)
+```
+
+#Check Baths
+
+```{r Temperature and Bath Interactions for Infection}
+Bath.CI <- glm(Infection ~ Bath, family = binomial, data = CST)
+summary(Bath.CI)
+
+Bath.Test.CI <- anova(Bath.CI, test = "Chi")
+Bath.Test.CI
+```
+
+```{r Temperature and Bath Interactions for Burden}
+Bath.CB <- glm.nb(Spores ~ Bath, data = CST)
+summary(Bath.CB)
+
+Bath.Test.CB <- anova(Bath.CB, test = "Chi")
+Bath.Test.CB
+```
+
+#Infection Model
+
+```{r Centred Infection Model}
+#using a quadratic polynomial as it gives the lowest AIC out of the suitable models
+ten.quadratic.CI <- glm(Infection ~ poly(Real_Avg_Cent, 2) * Amplitude * Duration, family = binomial, data = CST)
+summary(ten.quadratic.CI)
+```
+
+From the basis of this model an elastic regression is created with high colinearity so need a new approach 
+
+```{r Elastic Net Regression for Infection}
+# Prepare the data
+x.CI <- model.matrix(Infection ~ poly(Real_Avg_Cent, 2) * Amplitude * Duration, data = CST)  # Create the design matrix
+y.CI <- CST$Infection  # Extract the response variable
+```
+
+```{r Finding the optimal aplha}
+#trying various alphas to find which one is the most suitable 
+foldid.CI<- sample(1:10, size = length(y.CI), replace = TRUE)
+cv1.CI  <- cv.glmnet(x.CI, y.CI, foldid = foldid.CI, family = "binomial", alpha = 1)
+cv.5.CI <- cv.glmnet(x.CI, y.CI, foldid = foldid.CI, family = "binomial", alpha = 0.5)
+cv0.CI  <- cv.glmnet(x.CI, y.CI, foldid = foldid.CI, family = "binomial", alpha = 0)
+
+par(mfrow = c(2,2))
+plot(cv1.CI); plot(cv.5.CI); plot(cv0.CI)
+plot(log(cv1.CI$lambda)   , cv1.CI$cvm , pch = 19, col = "red",
+     xlab = "log(Lambda)", ylab = cv1.CI$name)
+points(log(cv.5.CI$lambda), cv.5.CI$cvm, pch = 19, col = "grey")
+points(log(cv0.CI$lambda) , cv0.CI$cvm , pch = 19, col = "blue")
+legend("topleft", legend = c("alpha= 1", "alpha= .5", "alpha 0"),
+       pch = 19, col = c("red","grey","blue"))
+```
+
+So alpha 0.5 deviates less and has the lowest log(lambda) so is the most suitable. 
+
+```{r Model Fitting}
+# Elastic regression model 
+elfit.b.CI <- cv.glmnet(x.CI, y.CI, family = "binomial", alpha = 0.5)  # Fit a ridge regression model
+
+# Select optimal tuning pattern (lambda) for ridge regression
+opt_lambda.CI <- elfit.b.CI$lambda.min  # Optimal lambda value for regression via CV
+
+# Refit the model using the selected lambda
+elfit.fin.CI <- glmnet(x.CI, y.CI, family = "binomial", alpha = 0.5, lambda = opt_lambda.CI)  
+# Fit the ridge regression model with the selected lambda
+```
+
+```{r bootstrapped significance testing for the coefficients of infection}
+# Number of bootstrap iterations
+num_bootstraps.CI <- 25000
+
+# Empty list to store bootstrap coefficients
+bootstrap_coefs_list.CI <- vector("list", length = num_bootstraps.CI)
+
+# Set the seed for reproducibility
+set.seed(123)
+
+# Perform bootstrapping
+for (i in 1:num_bootstraps.CI) {
+  # Sample with replacement from the data
+  sample_indices.CI <- sample(nrow(x.CI), replace = TRUE)
+  x_sampled.CI <- x.CI[sample_indices.CI, ]
+  y_sampled.CI <- y.CI[sample_indices.CI]
+  
+  # Fit the elastic net model on the sampled data
+  model_fit.CI <- glmnet(x_sampled.CI, y_sampled.CI, family = "binomial", alpha = 0.5, lambda = opt_lambda.CI)
+  
+  # Store the coefficients in the list
+  bootstrap_coefs_list.CI[[i]] <- as.vector(coef(model_fit.CI, s = opt_lambda.CI))
+}
+
+# Convert the list of bootstrap coefficients to a matrix
+bootstrap_coefs.CI <- do.call(rbind, bootstrap_coefs_list.CI)
+
+# Calculate the 95% confidence intervals for each coefficient
+lower_ci.CI <- apply(bootstrap_coefs.CI, 2, function(coef_col) quantile(coef_col, 0.025))
+upper_ci.CI <- apply(bootstrap_coefs.CI, 2, function(coef_col) quantile(coef_col, 0.975))
+
+# Convert the coefficients to a matrix
+coef_matrix.CI <- as.matrix(coef(elfit.fin.CI, s = opt_lambda.CI))
+
+# Combine the results into a data frame for easy interpretation
+coef_summary.CI <- data.frame(Coefficient = colnames(coef_matrix.CI),
+                              Estimate = coef_matrix.CI,
+                              Lower.CI = lower_ci.CI,
+                              Upper.CI = upper_ci.CI)
+
+# Print the summary
+print(coef_summary.CI)
+```
+
+```{r Feature Importance for Infection}
+# Extract the coefficients from the final model
+coef_matrix.CI <- as.matrix(coef(elfit.fin.CI, s = opt_lambda.CI))
+
+# Get the absolute values of coefficients to identify feature importance
+feature_importance.CI <- abs(coef_matrix.CI[-1,])
+
+# Sort the features by importance (highest to lowest)
+sorted_features.CI <- feature_importance.CI[order(-feature_importance.CI)]
+
+# Get the corresponding feature names
+sorted_feature_names.CI <- colnames(coef_matrix.CI)[-1][order(-feature_importance.CI)]
+
+# Combine the feature names with the sorted feature importance values
+sorted_feature_importance_table.CI <- data.frame(Feature = sorted_feature_names.CI,
+                                                 Importance = sorted_features.CI)
+
+# Print the sorted feature importance table
+print(sorted_feature_importance_table.CI)
+```
+
+```{r Model Fit (Area Under the Curve)}
+# Calculate the cross-validated AUC score using the training data
+# The predict() function with type = "response" will give cross-validated predicted probabilities
+cv_predicted_probabilities.CI <- predict(ridge_model.CI, s = "lambda.min", newx = x.CI, type = "response")
+cv_roc_curve.CI <- roc(y.CI, cv_predicted_probabilities.CI)
+cv_auc_score.CI <- auc(cv_roc_curve.CI)
+
+# Print the cross-validated AUC score
+print(paste("Cross-Validated AUC Score:", cv_auc_score.CI))
+```
+
+#Infection Contrast Comparisons 
+
+```{r Using A_Temp * Treatment}
+#Model used with treatment (combining amplitude and duration) x average temperature
+ten.treat.AT.CI <- glm(Infection ~ A_Temp * Treatment, family = binomial, data = CSTC)
+
+# Create custom contrasts for each level of A_Temp
+# We want to compare each treatment level to the reference level (Treatment = "0 0")
+EMM.CI <- emmeans(ten.treat.AT.CI, ~ A_Temp * Treatment, data = CSTC)
+EMM.CI
+```
+
+Infinite degrees of freedom due to the statistical output in the model used 
+
+The confidence intervals are likely very wide because of the large standard errors associated with these estimates, which is a common occurrence when you have small sample sizes or sparse data in certain combinations of factors.
+
+```{r Matrices for Contrasts}
+#Each row corresponds to one row from EMM.CI
+
+T14.00.CI <- c(1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+T17.00.CI <- c(0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0) 
+T20.00.CI <- c(0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+T23.00.CI <- c(0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+T14.33.CI <- c(0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+T17.33.CI <- c(0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+T20.33.CI <- c(0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0)
+T23.33.CI <- c(0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0)
+T14.36.CI <- c(0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0)
+T17.36.CI <- c(0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0)
+T20.36.CI <- c(0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0)
+T23.36.CI <- c(0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0)
+T14.63.CI <- c(0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0)
+T17.63.CI <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0)
+T20.63.CI <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0)
+T23.63.CI <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0)
+T14.66.CI <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0) 
+T17.66.CI <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0)
+T20.66.CI <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0)
+T23.66.CI <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1)
+```
+
+```{r Infection contrast comparisons}
+contrast(EMM.CI, adjust = "BH", method = list(
+  "14 -33 v 00"  = T14.33.CI - T14.00.CI,
+  "14 -36 v 00"  = T14.36.CI - T14.00.CI,
+  "14 -63 v 00"  = T14.63.CI - T14.00.CI,
+  "14 -66 v 00"  = T14.66.CI - T14.00.CI,
+  "14 -36 v -33" = T14.36.CI - T14.33.CI,
+  "14 -66 v -63" = T14.66.CI - T14.63.CI,
+  "14 -63 v -33" = T14.63.CI - T14.33.CI,
+  "14 -66 v -36" = T14.66.CI - T14.36.CI,
+  
+  "17 -33 v 00"  = T17.33.CI - T17.00.CI,
+  "17 -36 v 00"  = T17.36.CI - T17.00.CI,
+  "17 -63 v 00"  = T17.63.CI - T17.00.CI,
+  "17 -66 v 00"  = T17.66.CI - T17.00.CI,
+  "17 -36 v -33" = T17.36.CI - T17.33.CI,
+  "17 -66 v -63" = T17.66.CI - T17.63.CI,
+  "17 -63 v -33" = T17.63.CI - T17.33.CI,
+  "17 -66 v -36" = T17.66.CI - T17.36.CI,
+  
+  "20 -33 v 00"  = T20.33.CI - T20.00.CI,
+  "20 -36 v 00"  = T20.36.CI - T20.00.CI,
+  "20 -63 v 00"  = T20.63.CI - T20.00.CI,
+  "20 -66 v 00"  = T20.66.CI - T20.00.CI,
+  "20 -36 v -33" = T20.36.CI - T20.33.CI,
+  "20 -66 v -63" = T20.66.CI - T20.63.CI,
+  "20 -63 v -33" = T20.63.CI - T20.33.CI,
+  "20 -66 v -36" = T20.66.CI - T20.36.CI, 
+  
+  "23 -33 v 00"  = T23.33.CI - T23.00.CI,
+  "23 -36 v 00"  = T23.36.CI - T23.00.CI,
+  "23 -63 v 00"  = T23.63.CI - T23.00.CI,
+  "23 -66 v 00"  = T23.66.CI - T23.00.CI,
+  "23 -36 v -33" = T23.36.CI - T23.33.CI,
+  "23 -66 v -63" = T23.66.CI - T23.63.CI,
+  "23 -63 v -33" = T23.63.CI - T23.33.CI,
+  "23 -66 v -36" = T23.66.CI - T23.36.CI))
+```
+
+#Infection Graphs
+
+```{r Ten Infection Percentage and Models}
+#making a ggplot plotting by treatment looking at all treatments
+TenAvg.CI <- ggplot(CST, aes(x = A_Temp, y = Prop, colour = Treatment)) +
+  geom_point(position = position_dodge(width = 0.5), size = 3) +
+  geom_smooth(aes(x = A_Temp, y = Prop, colour = Treatment), lty = "dashed",
+              method = "glm", method.args = list(family = "binomial"), formula = y ~ poly(x,2),
+              se = FALSE, size = 0.6) +
+  geom_errorbar(aes(ymin = lower.I, ymax = upper.I), width = 0.2, position = position_dodge(width = 0.5)) +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  theme(legend.position = "top", legend.key=element_rect(fill="white"),
+        legend.text = element_text(size = 14), legend.title = element_blank()) +
+  scale_colour_manual(values = c("#BBBBBB", "#94CBEC", "#5DA899", "#337538", "#2E2585"),
+                      labels = c("Constant","-3°C for 3 days", "-3°C for 6 days", "-6°C for 3 days", "-6°C for 6 days")) + 
+  theme(axis.text = element_text(size = 14)) +
+  theme(panel.border = element_rect(colour = "black", fill = NA, size = 1)) +
+  scale_x_continuous(breaks = seq(8, 23, 3)) +
+  coord_cartesian(ylim = c(0,1))  # Set the y-axis limits from 0 to 1 as it is proportion data 
+
+TenAvg.CI  
+
+ggsave("AllTenAvg.CI.png", width = 8.5, height = 6)
+```
+
+#Infection Interactions Plot
+
+Grouping Points by Duration 
+
+```{r Making Subsets for Interactions (Day 10)}
+#Subset the data frames so each has one timing, one temperature, and only cold spell treatments).
+TenInt14.D.CI <- subset(binconfCST, A_Temp == "14" & Amplitude %in% c("-3","-6"))
+TenInt17.D.CI <- subset(binconfCST, A_Temp == "17" & Amplitude %in% c("-3","-6")) 
+TenInt20.D.CI <- subset(binconfCST, A_Temp == "20" & Amplitude %in% c("-3","-6"))
+TenInt23.D.CI <- subset(binconfCST, A_Temp == "23" & Amplitude %in% c("-3","-6"))
+```
+
+```{r 14 Degree Amplitude vs Duration (Day 10)}
+#grouping so amplitude is the x axis, infection is the y axis, and colour grouped by duration
+TenInt14.Plot.D.CI <- ggplot(TenInt14.D.CI, aes(x = Amplitude, y = Prop, colour = Duration)) +
+  geom_point(size = 2, position = position_dodge(width = 0.3)) +
+  geom_errorbar(aes(ymin = Lower_Conf, ymax = Upper_Conf), width = 0.2, position = position_dodge(width = 0.3)) +
+  geom_line(aes(group = Duration), size = 0.75, position = position_dodge(width = 0.3)) + 
+  geom_hline(yintercept = 0.95, color = "grey", linetype = "dashed") + # line to show constant infection for the tempertaure
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  theme(axis.text = element_text(size = 14)) +
+  guides(color = "none") +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1)) +
+  coord_cartesian(ylim = c(0, 1)) 
+   
+TenInt14.Plot.D.CI
+```
+
+```{r 17 Degree Amplitude vs Duration (Day 10)}
+TenInt17.Plot.D.CI <- ggplot(TenInt17.D.CI, aes(x = Amplitude, y = Prop, colour = Duration)) + 
+  geom_point(size = 2, position = position_dodge(width = 0.3)) +
+  geom_errorbar(aes(ymin = Lower_Conf, ymax = Upper_Conf), width = 0.2, position = position_dodge(width = 0.3)) +
+  geom_line(aes(group = Duration), size = 0.75, position = position_dodge(width = 0.3)) + 
+  geom_hline(yintercept = 1, color = "grey", linetype = "dashed") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  theme(panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  theme(axis.text = element_text(size = 14)) +
+  guides(color = "none") +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1)) +
+  coord_cartesian(ylim = c(0, 1)) 
+
+TenInt17.Plot.D.CI
+```
+
+```{r 20 Degree Amplitude vs Duration (Day 10)}
+TenInt20.Plot.D.CI <- ggplot(TenInt20.D.CI, aes(x = Amplitude, y = Prop, colour = Duration)) +
+  geom_point(size = 2, position = position_dodge(width = 0.3)) +
+  geom_errorbar(aes(ymin = Lower_Conf, ymax = Upper_Conf), width = 0.2, position = position_dodge(width = 0.3)) +
+  geom_line(aes(group = Duration), size = 0.75, position = position_dodge(width = 0.3)) + 
+  geom_hline(yintercept = 0.92, color = "grey", linetype = "dashed") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  theme(panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  theme(axis.text = element_text(size = 14)) +
+  guides(color = "none") +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1)) +
+  coord_cartesian(ylim = c(0, 1)) 
+
+TenInt20.Plot.D.CI
+```
+
+```{r 23 Degree Amplitude vs Duration (Day 10)}
+TenInt23.Plot.D.CI <- ggplot(TenInt23.D.CI, aes(x = Amplitude, y = Prop, colour = Duration)) +
+  geom_point(size = 2, position = position_dodge(width = 0.3)) +
+  geom_errorbar(aes(ymin = Lower_Conf, ymax = Upper_Conf), width = 0.2, position = position_dodge(width = 0.3)) +
+  geom_line(aes(group = Duration), size = 0.75, position = position_dodge(width = 0.3)) + 
+  geom_hline(yintercept = 0.71, color = "grey", linetype = "dashed") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  scale_y_continuous(position = "right") +
+  theme(axis.text = element_text(size = 14)) +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  theme(legend.position = c(0.5,0.2), legend.key=element_rect(fill="white"),
+        legend.text = element_text(size = 12), legend.title = element_text(size = 12)) +
+  scale_colour_manual("CS Duration", values = c("#FF6666","#33CCCC"), 
+                      labels = c("3 Days", "6 Days")) 
+
+TenInt23.Plot.D.CI
+```
+
+#Exposed Model Test
+
+```{r Exposed zero inflated model}
+# Fit a zero-inflated negative binomial model
+zinb_model.CE <- zeroinfl(Exposed ~ poly(Real_Avg_Cent, 3) * Treatment | poly(Real_Avg_Cent, 3) * Treatment, data = CST, dist = 'negbin')
+
+# Summary of the model
+summary(zinb_model.CE).CE
+```
+
+```{r Exposed GLM}
+ten.nb.CE <- glm.nb(Exposed ~ poly(Real_Avg_Cent, 3) * Amplitude * Duration, data = CST)
+summary(ten.nb.CE)
+
+ten.anova.CE <- anova(ten.nb.CE, test = "Chi")
+ten.anova.CE
+```
+
+```{r Burden GLM}
+ten.nb.CB <- glm.nb(Spores ~ poly(Real_Avg_Cent, 3) * Amplitude * Duration, data = CST)
+
+summary(ten.nb.CB)
+
+ten.anova.CB <- anova(ten.nb.CB, test = "Chi")
+ten.anova.CB
+```
+
+#Burden Model
+
+```{r Centred Cubic NB Burden Model}
+#Lowest AIC found a cubic fit was most suitable for the data as it is nonlinear
+#use data set with NAs removed as they were uninfected and so never had a spore burden
+ten.nb.CB <- glm.nb(Spores ~ poly(Real_Avg_Cent, 3) * Amplitude * Duration, data = CST.NA)
+summary(ten.nb.CB)
+
+ten.anova.CB <- anova(ten.nb.CB, test = "Chi")
+ten.anova.CB
+```
+
+Again, colinearity deems it inaccurate model and from the basis of this model an elastic regression is created 
+
+```{r Negative Binomial Elastic Regression}
+# Prepare the data
+x.CB <- model.matrix(Spores ~ poly(Real_Avg_Cent, 3) * Amplitude * Duration, data = CST.NA)
+y.CB <- CST.NA$Spores
+```
+
+```{r Finding optimal alpha}
+#different way to find the most suitable alpha but still involves modelling and finding the lowest AIC out of 1, 0.5, 0
+#theta needs to be manually specified in glmnet so we used the theta present in the GLM 
+fit_lasso.CB <- glmnet(x.CB, y.CB, family = negative.binomial(theta = 1.2208), alpha = 1)
+fit_mix.CB <- glmnet(x.CB, y.CB, family = negative.binomial(theta = 1.2208), alpha = 0.5)
+fit_ridge.CB<- glmnet(x.CB, y.CB, family = negative.binomial(theta = 1.2208), alpha = 0)
+
+# Calculate deviance for each model
+dev_lasso.CB <- deviance(fit_lasso.CB)
+dev_mix.CB <- deviance(fit_mix.CB)
+dev_ridge.CB <- deviance(fit_ridge.CB)
+
+# Calculate number of non-zero coefficients for each model
+num_nonzero_lasso.CB <- sum(coef(fit_lasso.CB, s = 0) != 0)
+num_nonzero_mix.CB <- sum(coef(fit_mix.CB, s = 0) != 0)
+num_nonzero_ridge.CB <- sum(coef(fit_ridge.CB, s = 0) != 0)
+
+# Calculate AIC and BIC
+n.CB <- length(y.CB)
+aic_lasso.CB <- n.CB * log(dev_lasso.CB / n.CB) + 2 * num_nonzero_lasso.CB
+aic_mix.CB <- n.CB * log(dev_mix.CB / n.CB) + 2 * num_nonzero_mix.CB
+aic_ridge.CB <- n.CB * log(dev_ridge.CB / n.CB) + 2 * num_nonzero_ridge.CB
+
+bic_lasso.CB <- n.CB * log(dev_lasso.CB / n.CB) + log(n.CB) * num_nonzero_lasso.CB
+bic_mix.CB <- n.CB * log(dev_mix.CB / n.CB) + log(n.CB) * num_nonzero_mix.CB
+bic_ridge.CB <- n.CB * log(dev_ridge.CB / n.CB) + log(n.CB) * num_nonzero_ridge.CB
+
+# Compare AIC or BIC values to choose the best model
+if (aic_lasso.CB < aic_mix.CB & aic_lasso.CB < aic_ridge.CB) {
+  best_alpha_aic.CB = 1
+} else if (aic_mix.CB < aic_ridge.CB) {
+  best_alpha_aic.CB = 0.5
+} else {
+  best_alpha_aic.CB = 0
+}
+
+if (bic_lasso.CB < bic_mix.CB & bic_lasso.CB < bic_ridge.CB) {
+  best_alpha_bic.CB = 1
+} else if (bic_mix.CB < bic_ridge.CB) {
+  best_alpha_bic.CB = 0.5
+} else {
+  best_alpha_bic.CB = 0
+}
+
+# Print the best alpha values based on AIC and BIC
+print(paste("Best alpha based on AIC:", best_alpha_aic.CB))
+print(paste("Best alpha based on BIC:", best_alpha_bic.CB))
+```
+
+```{r Initial Model fit}
+# Fit the elastic net model using the theta from the glm.nb 
+elfit.nb.CB <- glmnet(x.CB, y.CB, family = negative.binomial(theta = 1.2208), alpha = 0.5)
+```
+
+```{r Finding the optimal lambda}
+# Calculate AIC for each lambda
+aic_values <- sapply(elfit.nb.CB$lambda, function(lambda) {
+  fitted_values <- predict(elfit.nb.CB, newx = x.CB, s = lambda, type = "response")
+  logLikelihood <- sum(dnbinom(y.CB, mu = fitted_values, size = 1.2208, log = TRUE))
+  k <- sum(coef(elfit.nb.CB, s = lambda, exact = TRUE) != 0)
+  -2 * logLikelihood + 2 * k
+})
+
+# Calculate BIC for each lambda
+n <- length(y.CB)
+bic_values <- sapply(elfit.nb.CB$lambda, function(lambda) {
+  fitted_values <- predict(elfit.nb.CB, newx = x.CB, s = lambda, type = "response")
+  logLikelihood <- sum(dnbinom(y.CB, mu = fitted_values, size = 1.2208, log = TRUE))
+  k <- sum(coef(elfit.nb.CB, s = lambda, exact = TRUE) != 0)
+  -2 * logLikelihood + log(n) * k
+})
+
+# Print AIC and BIC values
+AIC.BIC.CB <- data.frame(lambda = elfit.nb.CB$lambda, AIC = aic_values, BIC = bic_values)
+```
+
+```{r Optimal Lambda Elastic Regression}
+lambda.CB <- elfit.nb.CB$lambda
+#set the lambda as the lowest AIC 
+lambda.AIC.CB <- 0.071067144
+
+#final regression with the lowest AIC valued lambda 
+elfit.aic.CB <- glmnet(x.CB, y.CB, family = negative.binomial(theta = 1.2208), alpha = 0.5, lambda = lambda.AIC.CB)
+```
+
+```{r Bootstrap significance testing for burden}
+# Number of bootstrap iterations
+num_bootstraps.CB <- 25000
+
+# Empty list to store bootstrap coefficients
+bootstrap_coefs_list.CB <- vector("list", length = num_bootstraps.CB)
+
+# Set the seed for reproducibility
+set.seed(123)
+
+# Perform bootstrapping
+for (i in 1:num_bootstraps.CB) {
+  # Sample with replacement from the data
+  sample_indices.CB <- sample(nrow(x.CB), replace = TRUE)
+  x_sampled.CB <- x.CB[sample_indices.CB, ]
+  y_sampled.CB <- y.CB[sample_indices.CB]
+  
+  # Fit the elastic net model on the sampled data
+  model_fit.CB <- glmnet(x_sampled.CB, y_sampled.CB, family = negative.binomial(theta = 1.2208), alpha = 0.5, lambda = lambda.AIC.CB)
+  
+  # Store the coefficients in the list
+  bootstrap_coefs_list.CB[[i]] <- as.vector(coef(model_fit.CB, s = lambda.AIC.CB))
+}
+
+# Convert the list of bootstrap coefficients to a matrix
+bootstrap_coefs.CB <- do.call(rbind, bootstrap_coefs_list.CB)
+
+# Calculate the 95% confidence intervals for each coefficient
+lower_ci.CB <- apply(bootstrap_coefs.CB, 2, function(coef_col) quantile(coef_col, 0.025)) #2.5th percentile
+upper_ci.CB <- apply(bootstrap_coefs.CB, 2, function(coef_col) quantile(coef_col, 0.975)) #97.5th percentile 
+
+# Convert the coefficients to a matrix
+coef_matrix.CB <- as.matrix(coef(elfit.aic.CB, s = lambda.AIC.CB))
+
+# Combine the results into a data frame for easy interpretation
+coef_summary.CB <- data.frame(Coefficient = colnames(coef_matrix.CB),
+                              Estimate = coef_matrix.CB,
+                              Lower.CB = lower_ci.CB,
+                              Upper.CB = upper_ci.CB)
+
+# Print the summary
+print(coef_summary.CB)
+```
+
+```{r Feature Importance for Burden}
+# Extract the coefficients from the final model
+coef_matrix.CB <- as.matrix(coef(elfit.aic.CB, s = lambda.AIC.CB))
+
+# Get the absolute values of coefficients to identify feature importance
+feature_importance.CB <- abs(coef_matrix.CB[-1,])
+
+# Sort the features by importance (highest to lowest)
+sorted_features.CB <- feature_importance.CB[order(-feature_importance.CB)]
+
+# Get the corresponding feature names
+sorted_feature_names.CB <- colnames(coef_matrix.CB)[-1][order(-feature_importance.CB)]
+
+# Combine the feature names with the sorted feature importance values
+sorted_feature_importance_table.CB <- data.frame(Feature = sorted_feature_names.CB,
+                                                 Importance = sorted_features.CB)
+
+# Print the sorted feature importance table
+print(sorted_feature_importance_table.CB)
+```
+
+```{r Predicted vs Actual Data}
+# Assuming 'predictions' contains the predicted values and 'y.CB' contains the actual values
+predict.CB <- predict(elfit.nb.CB, newx = x.CB, s = lambda.AIC.CB)
+
+# Create a data frame for the plot
+predict.plot.CB<- data.frame(Actual = y.CB, Predicted = predict.CB)
+
+# Create the prediction plot using ggplot2
+ggplot(predict.plot.CB, aes(x = Actual, y = s1)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(title = "Prediction Plot",
+       x = "Actual Values",
+       y = "Predicted Values") +
+  theme_minimal()
+```
+
+#Burden Contrast Comparisons
+
+```{r Using A_Temp * Treatment}
+#Model used again using treatment (combines amplitude and duration)
+ten.treat.AT.CB <- glm.nb(Spores ~ A_Temp * Treatment, data = CSTC)
+
+EMM.CB <- emmeans(ten.treat.AT.CB, ~ A_Temp * Treatment, data = CSTC)
+EMM.CB
+```
+
+```{r Matrices for Contrasts}
+#Each line corresponds to a line in EMM.CB
+T14.00.CB <- c(1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+T17.00.CB <- c(0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0) 
+T20.00.CB <- c(0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+T23.00.CB <- c(0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+T14.33.CB <- c(0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+T17.33.CB <- c(0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+T20.33.CB <- c(0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0)
+T23.33.CB <- c(0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0)
+T14.36.CB <- c(0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0)
+T17.36.CB <- c(0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0)
+T20.36.CB <- c(0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0)
+T23.36.CB <- c(0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0)
+T14.63.CB <- c(0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0)
+T17.63.CB <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0)
+T20.63.CB <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0)
+T23.63.CB <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0)
+T14.66.CB <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0) 
+T17.66.CB <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0)
+T20.66.CB <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0)
+T23.66.CB <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1)
+```
+
+```{r Burden Custom Contrasts}
+#Comparing lines 
+contrasts.CB <- contrast(EMM.CB, adjust = "BH", method = list(
+  "14 -33 v 00"  = T14.33.CB - T14.00.CB,
+  "14 -36 v 00"  = T14.36.CB - T14.00.CB,
+  "14 -63 v 00"  = T14.63.CB - T14.00.CB,
+  "14 -66 v 00"  = T14.66.CB - T14.00.CB,
+  "14 -36 v -33" = T14.36.CB - T14.33.CB,
+  "14 -66 v -63" = T14.66.CB - T14.63.CB,
+  "14 -63 v -33" = T14.63.CB - T14.33.CB,
+  "14 -66 v -36" = T14.66.CB - T14.36.CB,
+  
+  "17 -33 v 00"  = T17.33.CB - T17.00.CB,
+  "17 -36 v 00"  = T17.36.CB - T17.00.CB,
+  "17 -63 v 00"  = T17.63.CB - T17.00.CB,
+  "17 -66 v 00"  = T17.66.CB - T17.00.CB,
+  "17 -36 v -33" = T17.36.CB - T17.33.CB,
+  "17 -66 v -63" = T17.66.CB - T17.63.CB,
+  "17 -63 v -33" = T17.63.CB - T17.33.CB,
+  "17 -66 v -36" = T17.66.CB - T17.36.CB,
+  
+  "20 -33 v 00"  = T20.33.CB - T20.00.CB,
+  "20 -36 v 00"  = T20.36.CB - T20.00.CB,
+  "20 -63 v 00"  = T20.63.CB - T20.00.CB,
+  "20 -66 v 00"  = T20.66.CB - T20.00.CB,
+  "20 -36 v -33" = T20.36.CB - T20.33.CB,
+  "20 -66 v -63" = T20.66.CB - T20.63.CB,
+  "20 -63 v -33" = T20.63.CB - T20.33.CB,
+  "20 -66 v -36" = T20.66.CB - T20.36.CB, 
+  
+  "23 -33 v 00"  = T23.33.CB - T23.00.CB,
+  "23 -36 v 00"  = T23.36.CB - T23.00.CB,
+  "23 -63 v 00"  = T23.63.CB - T23.00.CB,
+  "23 -66 v 00"  = T23.66.CB - T23.00.CB,
+  "23 -36 v -33" = T23.36.CB - T23.33.CB,
+  "23 -66 v -63" = T23.66.CB - T23.63.CB,
+  "23 -63 v -33" = T23.63.CB - T23.33.CB,
+  "23 -66 v -36" = T23.66.CB - T23.36.CB))
+
+summary(contrasts.CB)
+```
+
+#Burden Graphs
+
+```{r Ten Average Burden and Model}
+#making a ggplot plotting by treatment looking at all treatments
+TenAvg.CB <- ggplot(CST, aes(x = A_Temp, y = Spores, colour = Treatment)) +
+  geom_smooth(aes(x = A_Temp, y = Spores, colour = Treatment),
+              method = "glm.nb", formula = y ~ poly(x, 3),
+              se = FALSE, size = 0.5, lty = "dashed") +
+  stat_summary(fun = "mean", geom = "point", size = 2.5,
+               position = position_dodge(width = 0.5)) +
+  geom_errorbar(aes(ymin = mean - se.B, ymax =  mean + se.B), width = 0.2, position = position_dodge(width = 0.5)) +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  theme(axis.text = element_text(size = 14)) +
+  theme(legend.title = element_text(face = "bold")) +
+  theme(legend.position = "top", legend.key = element_rect(fill = "white"),
+        legend.text = element_text(size = 14), legend.title = element_blank()) +
+  scale_colour_manual(values = c("#BBBBBB", "#94CBEC", "#5DA899", "#337538", "#2E2585"),
+                      labels = c("Constant","-3°C for 3 days", "-3°C for 6 days", "-6°C for 3 days", "-6°C for 6 days")) +
+  theme(panel.border = element_rect(colour = "black", fill = NA, size = 1)) +
+  scale_x_continuous(breaks = seq(8, 23, 3)) +
+  coord_cartesian(ylim = c(0,700))
+
+TenAvg.CB
+
+ggsave("AllTenAvg.CB.png", width = 8.5, height = 6)
+
+# old colours = "#999999", "#57B4E9", "#0D72B2", "#CC79A9", "#70135C"
+```
+
+#Burden Interaction Plots
+
+```{r Making Subsets for Interactions (Day 10)}
+#Subset the data frames so each has one timing, one temperature, and only cold spell treatments).
+TenInt14.D.CB <- subset(CST, A_Temp == "14" & Amplitude %in% c("-3","-6"))
+TenInt17.D.CB <- subset(CST, A_Temp == "17" & Amplitude %in% c("-3","-6")) 
+TenInt20.D.CB <- subset(CST, A_Temp == "20" & Amplitude %in% c("-3","-6"))
+TenInt23.D.CB <- subset(CST, A_Temp == "23" & Amplitude %in% c("-3","-6"))
+```
+
+```{r 14 Degree Amplitude vs Duration (Day 10)}
+TenInt14.Plot.D.CB <- ggplot(TenInt14.D.CB, aes(x = Amplitude, y = Spores, colour = Duration)) +
+  stat_summary(fun = "mean", geom = "point", size = 2, position = position_dodge(width = 0.3)) +
+  stat_summary(fun = "mean", geom = "line", aes(group = Duration), size = 0.75, position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(ymin = mean - se.B, ymax =  mean + se.B), width = 0.2, position = position_dodge(width = 0.3)) +
+  geom_hline(yintercept = 98, color = "grey", linetype = "dashed") + # Line for constant treatment
+  geom_hline(yintercept = 78, color = "#ECECEC") + #lower SE (SE = 20)
+  geom_hline(yintercept = 118, color = "#ECECEC") + #Upper SE (SE = 20)
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  theme(axis.text = element_text(size = 14)) +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1)) +
+  coord_cartesian(ylim = c(0, 750)) +
+  theme(legend.position = c(0.5,0.8), legend.key=element_rect(fill="white"),
+        legend.text = element_text(size = 12), legend.title = element_text(size = 12)) 
+
+TenInt14.Plot.D.CB
+ggsave("TenInt14.Plot.D.CB.png", width = 2.5, height = 3.5)
+```
+```{r 17 Degree Amplitude vs Duration (Day 10)}
+TenInt17.Plot.D.CB <- ggplot(TenInt17.D.CB, aes(x = Amplitude, y = Spores, colour = Duration)) + 
+  stat_summary(fun = "mean", geom = "point", size = 2,
+               position = position_dodge(width = 0.3)) +
+  stat_summary(fun = "mean", geom = "line", aes(group = Duration), size = 0.75,
+               position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(ymin = mean - se.B, ymax =  mean + se.B), width = 0.2, position = position_dodge(width = 0.3)) +
+  geom_hline(yintercept = 427, color = "grey", linetype = "dashed") +
+  geom_hline(yintercept = 386, color = "#ECECEC") + #lower SE (SE = 41)
+  geom_hline(yintercept = 468, color = "#ECECEC") + #Upper SE (SE = 41)
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank())+
+  theme(panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  theme(axis.text = element_text(size = 14)) +
+  scale_y_continuous(position = "right") +
+  guides(color = "none") +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1)) +
+  coord_cartesian(ylim = c(0, 750)) 
+
+TenInt17.Plot.D.CB
+ggsave("TenInt17.Plot.D.CB.png", width = 2.5, height = 3.5)
+```
+```{r 20 Degree Amplitude vs Duration (Day 10)}
+TenInt20.Plot.D.CB <- ggplot(TenInt20.D.CB, aes(x = Amplitude, y = Spores, colour = Duration)) +
+  stat_summary(fun = "mean", geom = "point", size = 2,
+               position = position_dodge(width = 0.3)) +
+  stat_summary(fun = "mean", geom = "line", aes(group = Duration), size = 0.75,
+               position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(ymin = mean - se.B, ymax =  mean + se.B), width = 0.2, position = position_dodge(width = 0.3)) +
+  geom_hline(yintercept = 486, color = "grey", linetype = "dashed") +
+  geom_hline(yintercept = 425, color = "#ECECEC") + #lower SE (SE = 61)
+  geom_hline(yintercept = 547, color = "#ECECEC") + #Upper SE (SE = 61)
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank())+
+  theme(panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  theme(axis.text = element_text(size = 14)) +
+  scale_y_continuous(position = "right") +
+  guides(color = "none") +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1)) +
+  coord_cartesian(ylim = c(0, 750)) 
+
+TenInt20.Plot.D.CB
+ggsave("TenInt20.Plot.D.CB.png", width = 2.5, height = 3.5)
+```
+```{r 23 Degree Amplitude vs Duration (Day 10)}
+TenInt23.Plot.D.CB <- ggplot(TenInt23.D.CB, aes(x = Amplitude, y = Spores, colour = Duration)) +
+  stat_summary(fun = "mean", geom = "point", size = 2,
+               position = position_dodge(width = 0.3)) +
+  stat_summary(fun = "mean", geom = "line", aes(group = Duration), size = 0.75,
+               position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(ymin = mean - se.B, ymax =  mean + se.B), width = 0.2, position = position_dodge(width = 0.3)) +
+  geom_hline(yintercept = 89, color = "grey", linetype = "dashed") +
+  geom_hline(yintercept = 64, color = "#ECECEC") + #lower SE (SE = 25)
+  geom_hline(yintercept = 114, color = "#ECECEC") + #Upper SE (SE = 25)
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank())+
+  theme(panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  theme(axis.text = element_text(size = 14)) +
+  scale_y_continuous(position = "right") +
+  guides(color = "none") +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1)) +
+  coord_cartesian(ylim = c(0, 750)) 
+
+TenInt23.Plot.D.CB
+ggsave("TenInt23.Plot.D.CB.png", width = 2.5, height = 3.5)
+```
