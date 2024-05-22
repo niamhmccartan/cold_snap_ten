@@ -1,5 +1,5 @@
 # cold_snap_ten
-Cold snaps lead to a 5-fold increase or a 3-fold decrease in disease proliferation depending on the baseline temperature. 
+**Cold snaps lead to a 5-fold increase or a 3-fold decrease in disease proliferation depending on the baseline temperature.** 
 
 Niamh McCartan 1 (communicating author), Jeremy Piggott 1, Sadie DiCarlo 1,2, and Pepijn Luijckx 1. 
 
