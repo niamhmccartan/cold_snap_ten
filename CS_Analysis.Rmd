@@ -335,7 +335,7 @@ TenAvg.CI <- ggplot(CST, aes(x = A_Temp, y = Prop, colour = Treatment)) +
         panel.grid.minor = element_blank()) +
   theme(legend.position = "top", legend.key=element_rect(fill="white"),
         legend.text = element_text(size = 14), legend.title = element_blank()) +
-  scale_colour_manual(values = c("#BBBBBB", "#94CBEC", "#5DA899", "#337538", "#2E2585"),
+  scale_colour_manual(values = c("#999999", "#CC79A9", "#70135C", "#57B4E9", "#0D72B2"),
                       labels = c("Constant","-3°C for 3 days", "-3°C for 6 days", "-6°C for 3 days", "-6°C for 6 days")) + 
   theme(axis.text = element_text(size = 14)) +
   theme(panel.border = element_rect(colour = "black", fill = NA, size = 1)) +
@@ -345,103 +345,6 @@ TenAvg.CI <- ggplot(CST, aes(x = A_Temp, y = Prop, colour = Treatment)) +
 TenAvg.CI  
 
 ggsave("AllTenAvg.CI.png", width = 8.5, height = 6)
-```
-
-#Infection Interactions Plot
-
-Grouping Points by Duration 
-
-```{r Making Subsets for Interactions (Day 10)}
-#Subset the data frames so each has one timing, one temperature, and only cold spell treatments).
-TenInt14.D.CI <- subset(binconfCST, A_Temp == "14" & Amplitude %in% c("-3","-6"))
-TenInt17.D.CI <- subset(binconfCST, A_Temp == "17" & Amplitude %in% c("-3","-6")) 
-TenInt20.D.CI <- subset(binconfCST, A_Temp == "20" & Amplitude %in% c("-3","-6"))
-TenInt23.D.CI <- subset(binconfCST, A_Temp == "23" & Amplitude %in% c("-3","-6"))
-```
-
-```{r 14 Degree Amplitude vs Duration (Day 10)}
-#grouping so amplitude is the x axis, infection is the y axis, and colour grouped by duration
-TenInt14.Plot.D.CI <- ggplot(TenInt14.D.CI, aes(x = Amplitude, y = Prop, colour = Duration)) +
-  geom_point(size = 2, position = position_dodge(width = 0.3)) +
-  geom_errorbar(aes(ymin = Lower_Conf, ymax = Upper_Conf), width = 0.2, position = position_dodge(width = 0.3)) +
-  geom_line(aes(group = Duration), size = 0.75, position = position_dodge(width = 0.3)) + 
-  geom_hline(yintercept = 0.95, color = "grey", linetype = "dashed") + # line to show constant infection for the tempertaure
-  theme(axis.title.x = element_blank(),
-        axis.title.y = element_blank()) +
-  theme(panel.background = element_blank(),
-        panel.grid.major = element_blank(), 
-        panel.grid.minor = element_blank()) +
-  theme(axis.text = element_text(size = 14)) +
-  guides(color = "none") +
-  theme(panel.border = element_rect(colour = "black", fill=NA, size=1)) +
-  coord_cartesian(ylim = c(0, 1)) 
-   
-TenInt14.Plot.D.CI
-```
-
-```{r 17 Degree Amplitude vs Duration (Day 10)}
-TenInt17.Plot.D.CI <- ggplot(TenInt17.D.CI, aes(x = Amplitude, y = Prop, colour = Duration)) + 
-  geom_point(size = 2, position = position_dodge(width = 0.3)) +
-  geom_errorbar(aes(ymin = Lower_Conf, ymax = Upper_Conf), width = 0.2, position = position_dodge(width = 0.3)) +
-  geom_line(aes(group = Duration), size = 0.75, position = position_dodge(width = 0.3)) + 
-  geom_hline(yintercept = 1, color = "grey", linetype = "dashed") +
-  theme(axis.title.x = element_blank(),
-        axis.title.y = element_blank(),
-        axis.text.y = element_blank(),
-        axis.ticks.y = element_blank()) +
-  theme(panel.background = element_blank(),
-        panel.grid.major = element_blank(), 
-        panel.grid.minor = element_blank()) +
-  theme(axis.text = element_text(size = 14)) +
-  guides(color = "none") +
-  theme(panel.border = element_rect(colour = "black", fill=NA, size=1)) +
-  coord_cartesian(ylim = c(0, 1)) 
-
-TenInt17.Plot.D.CI
-```
-
-```{r 20 Degree Amplitude vs Duration (Day 10)}
-TenInt20.Plot.D.CI <- ggplot(TenInt20.D.CI, aes(x = Amplitude, y = Prop, colour = Duration)) +
-  geom_point(size = 2, position = position_dodge(width = 0.3)) +
-  geom_errorbar(aes(ymin = Lower_Conf, ymax = Upper_Conf), width = 0.2, position = position_dodge(width = 0.3)) +
-  geom_line(aes(group = Duration), size = 0.75, position = position_dodge(width = 0.3)) + 
-  geom_hline(yintercept = 0.92, color = "grey", linetype = "dashed") +
-  theme(axis.title.x = element_blank(),
-        axis.title.y = element_blank(),
-        axis.text.y = element_blank(),
-        axis.ticks.y = element_blank()) +
-  theme(panel.background = element_blank(),
-        panel.grid.major = element_blank(), 
-        panel.grid.minor = element_blank()) +
-  theme(axis.text = element_text(size = 14)) +
-  guides(color = "none") +
-  theme(panel.border = element_rect(colour = "black", fill=NA, size=1)) +
-  coord_cartesian(ylim = c(0, 1)) 
-
-TenInt20.Plot.D.CI
-```
-
-```{r 23 Degree Amplitude vs Duration (Day 10)}
-TenInt23.Plot.D.CI <- ggplot(TenInt23.D.CI, aes(x = Amplitude, y = Prop, colour = Duration)) +
-  geom_point(size = 2, position = position_dodge(width = 0.3)) +
-  geom_errorbar(aes(ymin = Lower_Conf, ymax = Upper_Conf), width = 0.2, position = position_dodge(width = 0.3)) +
-  geom_line(aes(group = Duration), size = 0.75, position = position_dodge(width = 0.3)) + 
-  geom_hline(yintercept = 0.71, color = "grey", linetype = "dashed") +
-  theme(axis.title.x = element_blank(),
-        axis.title.y = element_blank()) +
-  theme(panel.background = element_blank(),
-        panel.grid.major = element_blank(), 
-        panel.grid.minor = element_blank()) +
-  scale_y_continuous(position = "right") +
-  theme(axis.text = element_text(size = 14)) +
-  theme(panel.border = element_rect(colour = "black", fill=NA, size=1)) +
-  coord_cartesian(ylim = c(0, 1)) +
-  theme(legend.position = c(0.5,0.2), legend.key=element_rect(fill="white"),
-        legend.text = element_text(size = 12), legend.title = element_text(size = 12)) +
-  scale_colour_manual("CS Duration", values = c("#FF6666","#33CCCC"), 
-                      labels = c("3 Days", "6 Days")) 
-
-TenInt23.Plot.D.CI
 ```
 
 #Exposed Model Test
@@ -754,7 +657,7 @@ TenAvg.CB <- ggplot(CST, aes(x = A_Temp, y = Spores, colour = Treatment)) +
   theme(legend.title = element_text(face = "bold")) +
   theme(legend.position = "top", legend.key = element_rect(fill = "white"),
         legend.text = element_text(size = 14), legend.title = element_blank()) +
-  scale_colour_manual(values = c("#BBBBBB", "#94CBEC", "#5DA899", "#337538", "#2E2585"),
+  scale_colour_manual(values = c("#999999", "#CC79A9", "#70135C", "#57B4E9", "#0D72B2"),
                       labels = c("Constant","-3°C for 3 days", "-3°C for 6 days", "-6°C for 3 days", "-6°C for 6 days")) +
   theme(panel.border = element_rect(colour = "black", fill = NA, size = 1)) +
   scale_x_continuous(breaks = seq(8, 23, 3)) +
@@ -763,8 +666,6 @@ TenAvg.CB <- ggplot(CST, aes(x = A_Temp, y = Spores, colour = Treatment)) +
 TenAvg.CB
 
 ggsave("AllTenAvg.CB.png", width = 8.5, height = 6)
-
-# old colours = "#999999", "#57B4E9", "#0D72B2", "#CC79A9", "#70135C"
 ```
 
 #Burden Interaction Plots
