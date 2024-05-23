@@ -27,7 +27,7 @@ library(ggplot2)
 
 #Import and Clean Data 
 
-````{r Import Data Set}
+```{r Import Data Set}
 coldsnap<-read.csv("CS_Data.csv", 
                  header = TRUE, 
                  stringsAsFactors = FALSE)
