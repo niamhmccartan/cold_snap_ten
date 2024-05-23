@@ -28,8 +28,6 @@ library(ggplot2)
 #Import and Clean Data 
 
 ````{r Import Data Set}
-setwd("/Users/niamhmccartan/Documents/College/PhD/Papers/CS_Ten/Final_Documents")
-
 coldsnap<-read.csv("CS_Data.csv", 
                  header = TRUE, 
                  stringsAsFactors = FALSE)
